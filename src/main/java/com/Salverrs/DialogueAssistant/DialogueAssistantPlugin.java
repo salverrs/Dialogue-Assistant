@@ -3,6 +3,7 @@ package com.Salverrs.DialogueAssistant;
 import com.google.gson.reflect.TypeToken;
 import com.google.inject.Provides;
 import javax.inject.Inject;
+
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.events.*;
@@ -34,10 +35,12 @@ public class DialogueAssistantPlugin extends Plugin
 {
 	public static final String CONFIG_GROUP = "DIALOGUE_ASSISTANT";
 	private final String MAP_KEY = "DIALOGUE_CONFIG";
-	private NPC lastInteractionNPC;
-	private boolean initialised = false;
-	private int optionParentId;
-	private Map<Integer, NPCDialogueConfig> dialogMap = new HashMap<>();
+	private final int MENU_IDENTIFIER = CONFIG_GROUP.hashCode();
+	private int lastNPCInteractionId = -1;
+	private int lastInteractionId = -1;
+	private int optionParentId = -1;
+	private int chatGroupId = -1;
+	private Map<Integer, DialogueConfig> dialogMap = new HashMap<>();
 	private List<Widget> recentWidgets = new ArrayList<>();
 
 	@Inject
@@ -59,35 +62,28 @@ public class DialogueAssistantPlugin extends Plugin
 	public void onWidgetLoaded(WidgetLoaded event)
 	{
 		if (event.getGroupId() == WidgetID.DIALOG_OPTION_GROUP_ID)
-		{
-			updateGroupWidgetId();
 			checkDialogOptions();
-		}
 	}
 
 	@Subscribe
 	protected void onClientTick(ClientTick clientTick)
 	{
-		if (!initialised || client.getGameState() != GameState.LOGGED_IN || client.isMenuOpen())
+		if (client.getGameState() != GameState.LOGGED_IN || client.isMenuOpen())
 			return;
 
-		if (lastInteractionNPC == null)
+		if (!hasTarget())
 			return;
 
 		final List<MenuEntry> entries = new ArrayList<>(Arrays.asList(client.getMenuEntries()));
+		final DialogueConfig dConfig = getDConfig(lastInteractionId);
 
 		for (MenuEntry entry : entries)
 		{
 			final Widget widget = entry.getWidget();
-			final Widget parent = widget != null ? widget.getParent() : null;
-			final int parentId = parent != null ? parent.getId() : -1;
-
-			if (parentId != optionParentId)
+			if (!isDialogueOption(widget))
 				continue;
 
-			final String option = entry.getWidget().getText();
-			final NPCDialogueConfig dConfig = getNPCDConfig(lastInteractionNPC);
-
+			final String option = widget.getText();
 			final boolean isHighlighted = dConfig != null && dConfig.isHighlighted(option);
 			final boolean isLocked = dConfig != null && dConfig.isLocked(option);
 
@@ -96,6 +92,7 @@ public class DialogueAssistantPlugin extends Plugin
 				client.createMenuEntry(-1)
 						.setOption("Reset Option")
 						.setTarget("")
+						.setParam0(MENU_IDENTIFIER) // Used to recognise plugin menu entries without comparing strings
 						.setType(MenuAction.RUNELITE)
 						.onClick((e) -> resetOption(dConfig, option, widget));
 			}
@@ -105,8 +102,9 @@ public class DialogueAssistantPlugin extends Plugin
 				client.createMenuEntry(-1)
 						.setOption("Lock Option")
 						.setTarget("")
+						.setParam0(MENU_IDENTIFIER)
 						.setType(MenuAction.RUNELITE)
-						.onClick((e) -> setAsLockedOption(lastInteractionNPC, option, widget));
+						.onClick((e) -> setAsLockedOption(lastInteractionId, option, widget));
 			}
 
 			if (!isHighlighted)
@@ -114,8 +112,9 @@ public class DialogueAssistantPlugin extends Plugin
 				client.createMenuEntry(-1)
 						.setOption("Highlight Option")
 						.setTarget("")
+						.setParam0(MENU_IDENTIFIER)
 						.setType(MenuAction.RUNELITE)
-						.onClick((e) -> setAsHighlightedOption(lastInteractionNPC, option, widget));
+						.onClick((e) -> setAsHighlightedOption(lastInteractionId, option, widget));
 			}
 		}
 	}
@@ -129,46 +128,105 @@ public class DialogueAssistantPlugin extends Plugin
 		final Actor target = event.getTarget();
 
 		if (target instanceof NPC)
-			lastInteractionNPC = (NPC)event.getTarget();
+		{
+			lastInteractionId = ((NPC)event.getTarget()).getId();
+			lastNPCInteractionId = lastInteractionId;
+			//log.info("[interact] last id: " + lastInteractionId);
+		}
+		else if (target == null)
+		{
+			lastNPCInteractionId = -1;
+			//log.info("[interact - no set] last id: null");
+		}
+
 	}
 
 	@Subscribe
 	private void onMenuOptionClicked(MenuOptionClicked event)
 	{
-		if (!initialised || lastInteractionNPC == null)
+		final MenuEntry menuEntry = event.getMenuEntry();
+		final Widget widget = menuEntry.getWidget();
+
+		if (lastNPCInteractionId == -1 && !isChatMenuOption(menuEntry, 10))
+		{
+			final String menuOption = event.getMenuOption();
+			final String menuTarget = event.getMenuTarget();
+
+			lastInteractionId = getMenuHashId(menuOption, menuTarget);
+			//log.info("[menu] last id: " + lastInteractionId);
+		}
+
+		final DialogueConfig dConfig = getDConfig(lastInteractionId);
+		if (dConfig == null || widget == null)
 			return;
 
-		final NPCDialogueConfig dConfig = getNPCDConfig(lastInteractionNPC);
-
-		if (dConfig == null)
+		final String dialogueOption = widget.getText();
+		if (dialogueOption == null || dialogueOption.equals(""))
 			return;
 
-		final Widget widget = event.getWidget();
-		final String option = widget != null ? widget.getText() : null;
-
-		if (option == null)
-			return;
-
-		if (dConfig.isLocked(option))
+		if (dConfig.isLocked(dialogueOption))
 			event.consume();
 	}
 
-	private void updateGroupWidgetId()
+	private boolean isChatMenuOption(MenuEntry menuEntry, int maxSearch)
 	{
-		if (initialised)
-			return;
+		if (menuEntry.getParam0() == MENU_IDENTIFIER) // Plugin menu entry
+			return true;
 
-		final Widget optionGroup = client.getWidget(WidgetInfo.DIALOG_OPTION_OPTIONS);
-		optionParentId = optionGroup.getId();
-		initialised = true;
+		Widget widget = menuEntry.getWidget();
+		if (widget == null)
+			return false;
+
+		if (chatGroupId == -1)
+		{
+			final Widget chatGroup = client.getWidget(WidgetInfo.CHATBOX);
+			if (chatGroup == null)
+				return false;
+
+			chatGroupId = chatGroup.getId();
+		}
+
+		for (int i = 0; i < maxSearch; i++)
+		{
+			if (widget == null)
+				return false;
+
+			final int id = widget.getId();
+
+			if (id == chatGroupId)
+				return true;
+
+			widget = widget.getParent();
+		}
+
+		return false;
+	}
+
+	private boolean isDialogueOption(Widget widget)
+	{
+		if (optionParentId == -1)
+		{
+			final Widget optionGroup = client.getWidget(WidgetInfo.DIALOG_OPTION_OPTIONS);
+			if (optionGroup == null)
+				return false;
+
+			optionParentId = optionGroup.getId();
+		}
+
+		return widget != null && widget.getParent() != null && widget.getParent().getId() == optionParentId;
+	}
+
+	private int getMenuHashId(String option, String target)
+	{
+		if (target.contains("NPC Contact")) // So that quick chat (i.e. right-click -> NPC) hashes to the same ID as the normal menu option
+			target = "";
+
+		return (option + target).hashCode();
 	}
 
 	private void checkDialogOptions()
 	{
-		if (!initialised)
-			return;
-
-		final NPCDialogueConfig dConfig = getNPCDConfig(lastInteractionNPC);
+		final DialogueConfig dConfig = getDConfig(lastInteractionId);
 		if (dConfig == null)
 			return;
 
@@ -176,12 +234,6 @@ public class DialogueAssistantPlugin extends Plugin
 
 		clientThread.invokeLater(() ->
 		{
-			if (lastInteractionNPC == null)
-			{
-				setAllOptionsLocked(false);
-				return;
-			}
-
 			final Widget optionGroup = client.getWidget(WidgetInfo.DIALOG_OPTION_OPTIONS);
 			final Widget[] children = optionGroup != null ? optionGroup.getChildren() : null;
 
@@ -252,29 +304,29 @@ public class DialogueAssistantPlugin extends Plugin
 		optionGroup.setHidden(locked);
 	}
 
-	private void setAsHighlightedOption(NPC npc, String optionTarget, Widget widget)
+	private void setAsHighlightedOption(int targetId, String optionTarget, Widget widget)
 	{
 		clientThread.invokeLater(() ->
 		{
-			final NPCDialogueConfig dConfig = getNPCDConfig(npc, true);
+			final DialogueConfig dConfig = getDConfig(targetId, true);
 			dConfig.setHighlighted(optionTarget);
 			refreshOptionState(dConfig, optionTarget, widget);
 			saveConfig();
 		});
 	}
 
-	private void setAsLockedOption(NPC npc, String optionTarget, Widget widget)
+	private void setAsLockedOption(int targetId, String optionTarget, Widget widget)
 	{
 		clientThread.invokeLater(() ->
 		{
-			final NPCDialogueConfig dConfig = getNPCDConfig(npc, true);
+			final DialogueConfig dConfig = getDConfig(targetId, true);
 			dConfig.setLocked(optionTarget);
 			refreshOptionState(dConfig, optionTarget, widget);
 			saveConfig();
 		});
 	}
 
-	private void resetOption(NPCDialogueConfig dConfig, String optionTarget, Widget widget)
+	private void resetOption(DialogueConfig dConfig, String optionTarget, Widget widget)
 	{
 		clientThread.invokeLater(() ->
 		{
@@ -284,7 +336,7 @@ public class DialogueAssistantPlugin extends Plugin
 		});
 	}
 
-	private void refreshOptionState(NPCDialogueConfig dConfig, String optionTarget, Widget widget)
+	private void refreshOptionState(DialogueConfig dConfig, String optionTarget, Widget widget)
 	{
 		highlightOptionWidget(widget, false, true);
 		lockOptionWidget(widget, false, true);
@@ -293,30 +345,35 @@ public class DialogueAssistantPlugin extends Plugin
 		lockOptionWidget(widget, dConfig.isLocked(optionTarget), false);
 	}
 
-	private NPCDialogueConfig getNPCDConfig(NPC npc)
+	private DialogueConfig getDConfig(int id)
 	{
-		return getNPCDConfig(npc, false);
+		if (id == 0 || id == -1)
+			return null;
+
+		return getDConfig(id, false);
 	}
 
-	private NPCDialogueConfig getNPCDConfig(NPC npc, boolean forceCreate)
+	private DialogueConfig getDConfig(int id, boolean forceCreate)
 	{
-		final int npcId = npc.getId();
-		final NPCDialogueConfig dConfig = dialogMap.getOrDefault(npcId, null);
+		if (id == 0 || id == -1)
+			return null;
+
+		final DialogueConfig dConfig = dialogMap.getOrDefault(id, null);
 
 		if (forceCreate && dConfig == null)
 		{
-			return addNPCDialogueConfig(npc);
+			return addDialogueConfig(id);
 		}
 		else
 		{
-			return dialogMap.getOrDefault(npcId, null);
+			return dialogMap.getOrDefault(id, null);
 		}
 	}
 
-	private NPCDialogueConfig addNPCDialogueConfig(NPC npc)
+	private DialogueConfig addDialogueConfig(int id)
 	{
-		final NPCDialogueConfig dialogueOptions = new NPCDialogueConfig(npc);
-		dialogMap.put(npc.getId(), dialogueOptions);
+		final DialogueConfig dialogueOptions = new DialogueConfig(id);
+		dialogMap.put(id, dialogueOptions);
 		return dialogueOptions;
 	}
 
@@ -354,15 +411,19 @@ public class DialogueAssistantPlugin extends Plugin
 		}
 		else
 		{
-			final Type mapType = new TypeToken<Map<Integer, NPCDialogueConfig>>(){}.getType();
+			final Type mapType = new TypeToken<Map<Integer, DialogueConfig>>(){}.getType();
 			dialogMap = GSON.fromJson(json, mapType);
 		}
+	}
+
+	private boolean hasTarget()
+	{
+		return lastInteractionId != -1;
 	}
 
 	@Override
 	protected void shutDown()
 	{
-		initialised = false;
 		resetAllRecentWidgets();
 	}
 

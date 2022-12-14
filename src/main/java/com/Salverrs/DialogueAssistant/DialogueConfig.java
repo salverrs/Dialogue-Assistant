@@ -5,18 +5,15 @@ import net.runelite.api.NPC;
 import java.util.HashMap;
 import java.util.Map;
 
-public class NPCDialogueConfig {
+public class DialogueConfig {
     @Getter
-    private int npcId;
-    @Getter
-    private String npcName;
+    private int targetId;
 
     private Map<String, OptionStatus> optionMap = new HashMap<>();
 
-    public NPCDialogueConfig(NPC npc)
+    public DialogueConfig(int id)
     {
-        this.npcId = npc.getId();
-        this.npcName = npc.getName();
+        this.targetId = id;
     }
 
     public boolean isHighlighted(String option)
