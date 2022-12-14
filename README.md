@@ -5,6 +5,6 @@ To highlight or lock an option, right-click the option during the chat dialogue 
 
 ### Configuring
 
-You can change the text colour for highlighted and locked options using the plugin config.
+You can set the text colour for highlighted and locked options using the plugin config.
 
 Dialogue preferences are typically stored per NPC ID, characters can often share a name but have a unique ID, take this into account when configuring dialogue options.
