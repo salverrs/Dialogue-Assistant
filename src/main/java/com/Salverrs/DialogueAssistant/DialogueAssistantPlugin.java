@@ -352,7 +352,7 @@ public class DialogueAssistantPlugin extends Plugin
 
 	private DialogueConfig getDConfig(int id)
 	{
-		if (id == 0 || id == -1)
+		if (id == -1)
 			return null;
 
 		return getDConfig(id, false);
@@ -360,7 +360,7 @@ public class DialogueAssistantPlugin extends Plugin
 
 	private DialogueConfig getDConfig(int id, boolean forceCreate)
 	{
-		if (id == 0 || id == -1)
+		if (id == -1)
 			return null;
 
 		final DialogueConfig dConfig = dialogMap.getOrDefault(id, null);
