@@ -35,11 +35,10 @@ public class DialogueAssistantPlugin extends Plugin
 {
 	public static final String CONFIG_GROUP = "DIALOGUE_ASSISTANT";
 	private final String MAP_KEY = "DIALOGUE_CONFIG";
-	private final int MENU_IDENTIFIER = CONFIG_GROUP.hashCode();
 	private int lastNPCInteractionId = -1;
 	private int lastInteractionId = -1;
 	private int optionParentId = -1;
-	private int chatGroupId = -1;
+	private int viewportBoxId = -1;
 	private Map<Integer, DialogueConfig> dialogMap = new HashMap<>();
 	private List<Widget> recentWidgets = new ArrayList<>();
 
@@ -92,7 +91,6 @@ public class DialogueAssistantPlugin extends Plugin
 				client.createMenuEntry(-1)
 						.setOption("Reset Option")
 						.setTarget("")
-						.setParam0(MENU_IDENTIFIER) // Used to recognise plugin menu entries without comparing strings
 						.setType(MenuAction.RUNELITE)
 						.onClick((e) -> resetOption(dConfig, option, widget));
 			}
@@ -102,7 +100,6 @@ public class DialogueAssistantPlugin extends Plugin
 				client.createMenuEntry(-1)
 						.setOption("Lock Option")
 						.setTarget("")
-						.setParam0(MENU_IDENTIFIER)
 						.setType(MenuAction.RUNELITE)
 						.onClick((e) -> setAsLockedOption(lastInteractionId, option, widget));
 			}
@@ -112,7 +109,6 @@ public class DialogueAssistantPlugin extends Plugin
 				client.createMenuEntry(-1)
 						.setOption("Highlight Option")
 						.setTarget("")
-						.setParam0(MENU_IDENTIFIER)
 						.setType(MenuAction.RUNELITE)
 						.onClick((e) -> setAsHighlightedOption(lastInteractionId, option, widget));
 			}
@@ -138,7 +134,6 @@ public class DialogueAssistantPlugin extends Plugin
 			lastNPCInteractionId = -1;
 			//log.info("[interact - no set] last id: null");
 		}
-
 	}
 
 	@Subscribe
@@ -147,7 +142,7 @@ public class DialogueAssistantPlugin extends Plugin
 		final MenuEntry menuEntry = event.getMenuEntry();
 		final Widget widget = menuEntry.getWidget();
 
-		if (lastNPCInteractionId == -1 && !isChatMenuOption(menuEntry, 10))
+		if (lastNPCInteractionId == -1 && (isWorldMenuOption(menuEntry) || isMenuException(menuEntry)))
 		{
 			final String menuOption = event.getMenuOption();
 			final String menuTarget = event.getMenuTarget();
@@ -168,22 +163,31 @@ public class DialogueAssistantPlugin extends Plugin
 			event.consume();
 	}
 
-	private boolean isChatMenuOption(MenuEntry menuEntry, int maxSearch)
+	private boolean isWorldMenuOption(MenuEntry menuEntry)
 	{
-		if (menuEntry.getParam0() == MENU_IDENTIFIER) // Plugin menu entry
+		final NPC npc = menuEntry.getNpc();
+		final Actor actor = menuEntry.getActor();
+		final Player player = menuEntry.getPlayer();
+		final MenuAction type = menuEntry.getType();
+
+		return isWorldMenuActionType(type) || (player == null && (npc != null || actor != null));
+	}
+
+	private boolean isMenuException(MenuEntry menuEntry) // Allow menu entries from NPC Contact viewport box
+	{
+		final int maxSearch = 5;
+		Widget widget = menuEntry.getWidget();
+
+		if (menuEntry.getTarget().contains("NPC Contact"))
 			return true;
 
-		Widget widget = menuEntry.getWidget();
-		if (widget == null)
-			return false;
-
-		if (chatGroupId == -1)
+		if (viewportBoxId == -1)
 		{
-			final Widget chatGroup = client.getWidget(WidgetInfo.CHATBOX);
-			if (chatGroup == null)
+			final Widget viewportBox = client.getWidget(WidgetInfo.RESIZABLE_VIEWPORT_OLD_SCHOOL_BOX);
+			if (viewportBox == null)
 				return false;
 
-			chatGroupId = chatGroup.getId();
+			viewportBoxId = viewportBox.getId();
 		}
 
 		for (int i = 0; i < maxSearch; i++)
@@ -191,15 +195,33 @@ public class DialogueAssistantPlugin extends Plugin
 			if (widget == null)
 				return false;
 
-			final int id = widget.getId();
-
-			if (id == chatGroupId)
+			if (widget.getId() == viewportBoxId)
 				return true;
 
 			widget = widget.getParent();
 		}
 
 		return false;
+	}
+
+	private boolean isWorldMenuActionType(MenuAction type)
+	{
+		switch(type)
+		{
+			case GAME_OBJECT_FIRST_OPTION:
+			case GAME_OBJECT_SECOND_OPTION:
+			case GAME_OBJECT_THIRD_OPTION:
+			case GAME_OBJECT_FOURTH_OPTION:
+			case GAME_OBJECT_FIFTH_OPTION:
+			case NPC_FIRST_OPTION:
+			case NPC_SECOND_OPTION:
+			case NPC_THIRD_OPTION:
+			case NPC_FOURTH_OPTION:
+			case NPC_FIFTH_OPTION:
+				return true;
+			default:
+				return false;
+		}
 	}
 
 	private boolean isDialogueOption(Widget widget)
@@ -230,21 +252,15 @@ public class DialogueAssistantPlugin extends Plugin
 		if (dConfig == null)
 			return;
 
-		setAllOptionsLocked(true);
-
-		clientThread.invokeLater(() ->
+		clientThread.invokeAtTickEnd(() ->
 		{
 			final Widget optionGroup = client.getWidget(WidgetInfo.DIALOG_OPTION_OPTIONS);
 			final Widget[] children = optionGroup != null ? optionGroup.getChildren() : null;
 
 			if (children == null || children.length == 0)
-			{
-				setAllOptionsLocked(false);
 				return;
-			}
 
 			final List<Widget> options = Arrays.stream(children).filter(Widget::hasListener).collect(Collectors.toList());
-
 			recentWidgets = options;
 
 			for (Widget optionWidget : options)
@@ -260,8 +276,6 @@ public class DialogueAssistantPlugin extends Plugin
 					lockOptionWidget(optionWidget, true, false);
 				}
 			}
-
-			setAllOptionsLocked(false);
 		});
 	}
 
@@ -293,15 +307,6 @@ public class DialogueAssistantPlugin extends Plugin
 			optionWidget.setTextColor(Color.BLACK.getRGB());
 			optionWidget.setOnMouseLeaveListener((JavaScriptCallback) ev -> optionWidget.setTextColor(Color.BLACK.getRGB()));
 		}
-	}
-
-	private void setAllOptionsLocked(boolean locked) // Prevents user from spamming option key before widget lock is applied
-	{
-		final Widget optionGroup = client.getWidget(WidgetInfo.DIALOG_OPTION_OPTIONS);
-		if (optionGroup == null)
-			return;
-
-		optionGroup.setHidden(locked);
 	}
 
 	private void setAsHighlightedOption(int targetId, String optionTarget, Widget widget)
@@ -381,8 +386,6 @@ public class DialogueAssistantPlugin extends Plugin
 	{
 		clientThread.invokeLater(() ->
 		{
-			setAllOptionsLocked(false);
-
 			for (Widget widget : recentWidgets)
 			{
 				if (widget == null)
@@ -424,6 +427,7 @@ public class DialogueAssistantPlugin extends Plugin
 	@Override
 	protected void shutDown()
 	{
+		lastInteractionId = -1;
 		resetAllRecentWidgets();
 	}
 
